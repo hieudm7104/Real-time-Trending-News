@@ -1,0 +1,241 @@
+services:
+    # 1. MongoDB
+    mongo:
+        image: mongo:6.0
+        container_name: mongo-v4
+        restart: always
+        ports:
+            - "27017:27017"
+        volumes:
+            - ./mongo-data:/data/db
+            - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+        networks:
+            - trending_news
+
+    # 2. Spark Master
+    spark-master:
+        build:
+            context: .
+            dockerfile: spark.Dockerfile
+        container_name: spark-master-v4
+        environment:
+            - SPARK_MODE=master
+        ports:
+            - "8080:8080"
+            - "7077:7077"
+        volumes:
+            - ./data:/opt/spark/work-dir/data
+            - ./src:/opt/spark/work-dir/src
+            - ./model:/opt/spark/work-dir/model
+            - ./processor:/opt/spark/work-dir/processor
+            - ./jars:/opt/spark/work-dir/jars
+            - ./checkpoints:/opt/spark/work-dir/checkpoints
+            - ./models:/opt/spark/work-dir/models
+        networks:
+            - trending_news
+
+    # 3. Spark Worker
+    spark-worker:
+        build:
+            context: .
+            dockerfile: spark.Dockerfile
+        container_name: spark-worker-v4
+        environment:
+            - SPARK_MODE=worker
+            - SPARK_MASTER=spark://spark-master:7077
+            - SPARK_WORKER_MEMORY=2G
+            - SPARK_WORKER_CORES=2
+        depends_on:
+            - spark-master
+        ports:
+            - "8081:8081"
+        volumes:
+            - ./data:/opt/spark/work-dir/data
+            - ./src:/opt/spark/work-dir/src
+            - ./model:/opt/spark/work-dir/model
+            - ./processor:/opt/spark/work-dir/processor
+            - ./jars:/opt/spark/work-dir/jars
+            - ./checkpoints:/opt/spark/work-dir/checkpoints
+            - ./models:/opt/spark/work-dir/models
+        networks:
+            - trending_news
+
+    # 5. Elasticsearch
+    elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+        container_name: elasticsearch-v4
+        environment:
+            - discovery.type=single-node
+            - xpack.security.enabled=false
+            - ES_JAVA_OPTS=-Xms1g -Xmx1g
+        ports:
+            - "9200:9200"
+        volumes:
+            - ./es-data:/usr/share/elasticsearch/data
+        networks:
+            - trending_news
+
+    # 6. Kibana
+    kibana:
+        image: docker.elastic.co/kibana/kibana:8.15.0
+        container_name: kibana-v4
+        environment:
+            - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+        ports:
+            - "5601:5601"
+        depends_on:
+            - elasticsearch
+        networks:
+            - trending_news
+
+    # 7. Zookeeper
+    zookeeper:
+        image: confluentinc/cp-zookeeper:7.4.0
+        container_name: zookeeper-v4
+        environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+            ZOOKEEPER_TICK_TIME: 2000
+            ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: WARN
+        ports:
+            - "2181:2181"
+        volumes:
+            - zookeeper-data:/var/lib/zookeeper/data
+            - zookeeper-logs:/var/lib/zookeeper/log
+        healthcheck:
+            test: [ "CMD-SHELL", "echo ruok | nc localhost 2181 || exit 1" ]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # 8. Kafka
+    kafka:
+        image: confluentinc/cp-kafka:7.6.1
+        container_name: kafka-v4
+        depends_on:
+            zookeeper:
+                condition: service_healthy
+        ports:
+            - "9092:9092"
+            - "29092:29092"
+        environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper-v4:2181
+            KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29092,PLAINTEXT_EXTERNAL://0.0.0.0:9092
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka-v4:29092,PLAINTEXT_EXTERNAL://localhost:9092
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+            KAFKA_MIN_INSYNC_REPLICAS: 1
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+        volumes:
+            - ./kafka-data:/var/lib/kafka/data
+        healthcheck:
+            test: [ "CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka-v4:29092 || exit 1" ]
+            interval: 30s
+            timeout: 10s
+            retries: 5
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # 9. Airflow Postgres
+    airflow-postgres:
+        image: postgres:15
+        container_name: airflow-postgres-v4
+        environment:
+            POSTGRES_USER: airflow
+            POSTGRES_PASSWORD: airflow
+            POSTGRES_DB: airflow
+        ports:
+            - "5435:5432"
+        volumes:
+            - airflow_pgdata:/var/lib/postgresql/data
+        networks:
+            - trending_news
+
+    # 10. Airflow Init
+    airflow-init:
+        build: .
+        container_name: airflow-init-v4
+        environment:
+            AIRFLOW__CORE__EXECUTOR: LocalExecutor
+            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres-v4:5432/airflow
+            AIRFLOW__WEBSERVER__SECRET_KEY: super_fixed_secret_12345
+        entrypoint: >
+            /bin/bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com"
+        depends_on:
+            - airflow-postgres
+        networks:
+            - trending_news
+
+    # 11. Airflow Webserver
+    airflow-webserver:
+        build: .
+        container_name: airflow-webserver-v4
+        restart: always
+        environment:
+            AIRFLOW__CORE__EXECUTOR: LocalExecutor
+            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres-v4:5432/airflow
+            AIRFLOW__WEBSERVER__SECRET_KEY: super_fixed_secret_12345
+            AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8085
+            AIRFLOW__LOGGING__WORKER_LOG_SERVER_PORT: 8793
+            AIRFLOW__LOGGING__WORKER_LOG_SERVER_HOST: localhost
+            PYTHONPATH: /opt/airflow/crawler
+        volumes:
+            - ./logs:/opt/airflow/logs
+            - ./plugins:/opt/airflow/plugins
+            - ./dags:/opt/airflow/dags
+            - ./crawler:/opt/airflow/crawler
+            - ./model:/app/model
+            - ./processor:/opt/airflow/processor
+            - /var/run/docker.sock:/var/run/docker.sock
+        ports:
+            - "8085:8080"
+        command: airflow webserver
+        depends_on:
+            - airflow-init
+        networks:
+            - trending_news
+
+    # 12. Airflow Scheduler
+    airflow-scheduler:
+        build: .
+        container_name: airflow-scheduler-v4
+        restart: always
+        environment:
+            AIRFLOW__CORE__EXECUTOR: LocalExecutor
+            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres-v4:5432/airflow
+            AIRFLOW__WEBSERVER__SECRET_KEY: super_fixed_secret_12345
+            AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8085
+            AIRFLOW__LOGGING__WORKER_LOG_SERVER_PORT: 8793
+            AIRFLOW__LOGGING__WORKER_LOG_SERVER_HOST: localhost
+        volumes:
+            - ./logs:/opt/airflow/logs
+            - ./plugins:/opt/airflow/plugins
+            - ./dags:/opt/airflow/dags
+            - ./crawler:/opt/airflow/crawler
+            - ./model:/app/model
+            - ./processor:/opt/airflow/processor
+            - /var/run/docker.sock:/var/run/docker.sock
+        command: airflow scheduler
+        depends_on:
+            - airflow-init
+        networks:
+            - trending_news
+
+networks:
+    trending_news:
+        name: Trending-News
+        driver: bridge
+
+volumes:
+    es-data:
+    kafka-data:
+    airflow_pgdata:
+    zookeeper-data:
+    zookeeper-logs:
