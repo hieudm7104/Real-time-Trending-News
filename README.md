@@ -1,69 +1,83 @@
-
 # Real-time Trending News System
 
-Link video demo https://youtu.be/ZufXfbmRjao
-
-Hệ thống thu thập và xử lý tin tức real-time sử dụng Apache Airflow, Spark, Kafka, MongoDB và Elasticsearch.
+Hệ thống thu thập và xử lý tin tức real-time với kiến trúc bigdata: Kafka → Spark → Elasticsearch → Kibana.
 
 ## 🏗️ Architecture
 
-- **Airflow**: Orchestration và crawling
-- **Apache Spark**: Xử lý ONNX embeddings (thay thế Jupyter)
-- **Kafka**: Message streaming
-- **MongoDB**: Data storage
-- **Elasticsearch**: Search và analytics
+- **Crawlers** — RSS feeds → Kafka (`raw_news`)
+- **Kafka + Zookeeper** — Message streaming
+- **Spark Streaming** — Đọc Kafka → gọi external embedding API → ghi Elasticsearch
+- **Elasticsearch** — Lưu raw + processed articles (có embedding)
+- **Kibana** — Dashboard trend / topic / sentiment
+- **Airflow** — Orchestration DAG
 
-## 🚀 Quick Start
+> Embedding model gọi qua API (OpenAI / Jina). Không CUDA, không ONNX.
 
-### 1. Build và chạy containers
+## Data Flow
+
+```
+Crawlers (VnExpress, Kenh14)
+    ↓ RSS
+Kafka topic: raw_news
+    ↓ Spark Streaming (spark_embedder.py)
+Embedding API (OpenAI/Jina/...)
+    ↓
+Elasticsearch: news_raw (raw)
+Elasticsearch: news_processed (có embedding)
+    ↑
+Kibana Dashboard
+```
+
+## Services
+
+| Service | Port | Creds |
+|---------|------|-------|
+| Elasticsearch | 9200 | — |
+| Kibana | 5601 | — |
+| Kafka | 9092 | — |
+| Spark Master | 8080 | — |
+| Spark Worker | 8081 | — |
+| Airflow | 8085 | admin/admin |
+
+## Quick Start
+
 ```bash
-# Windows
+# 1. Config
+cp .env.example .env
+# Sửa EMBEDDING_API_KEY trong .env
+
+# 2. Run
 docker-compose up --build -d
 
-# Linux/Mac
-./build-and-run.sh
+# 3. Airflow UI → trigger complete_news_pipeline_dag
+open http://localhost:8085  # admin/admin
+
+# 4. Kibana → create Index Pattern (news_processed) → Dashboard
+open http://localhost:5601
 ```
 
-### 2. Access URLs
-- **Airflow UI**: http://localhost:8085 (admin/admin)
-- **Spark Master UI**: http://localhost:8080
-- **Spark Worker UI**: http://localhost:8081
-- **Elasticsearch**: http://localhost:9200
-- **Kibana**: http://localhost:5601
+## .env Config
 
-## 📋 Services
+| Var | Description |
+|-----|-------------|
+| `ES_HOSTS` | `http://elasticsearch:9200` |
+| `ES_RAW_INDEX` | `news_raw` |
+| `ES_PROCESSED_INDEX` | `news_processed` |
+| `EMBEDDING_API_URL` | VD: `https://api.openai.com/v1/embeddings` |
+| `EMBEDDING_API_KEY` | API key của bạn |
+| `EMBEDDING_MODEL` | VD: `text-embedding-ada-002` |
+| `EMBEDDING_DIM` | 1536 (ada-002) / 1024 (jina) |
 
-### Airflow DAGs
-- `kenh14_producer_dag`: Crawl Kenh14 RSS feeds
-- `vnexpress_producer_dag`: Crawl VnExpress RSS feeds
-- `rss_consumer_dag`: Continuous RSS consumer
-- `spark_embedding_processing_dag`: Spark job cho ONNX embeddings
+## Kibana Dashboard
 
-### Spark Jobs
-- `spark_onnx_processor.py`: Xử lý ONNX embeddings trên Spark cluster
+Sau khi ES có data, Kibana dashboard gợi ý:
 
-## 🔧 Requirements Files
+1. **Index Pattern:** `news_processed` (Stack Management > Index Patterns)
+2. **Dashboard:**
+   - Số bài viết theo thời gian (line chart)
+   - Top sources (pie chart)
+   - Top categories (bar chart)
+   - Sentiment phân bố (nếu có)
+   - Recent articles table
 
-- `requirements-airflow.txt`: Dependencies cho Airflow (không có torch)
-- `requirements-spark.txt`: Dependencies cho Spark (có torch, onnx)
-
-## 📊 Data Flow
-
-1. **Crawling**: Airflow DAGs crawl RSS feeds
-2. **Streaming**: Data được gửi qua Kafka topic `raw_news`
-3. **Storage**: MongoDB lưu trữ raw data
-4. **Processing**: Spark job xử lý ONNX embeddings
-5. **Search**: Elasticsearch index cho search
-
-## 🛠️ Manual Commands
-
-```bash
-# Run crawler manually
-docker exec -it airflow-webserver-v4 python /opt/airflow/crawler/Kenh14_Crawler.py
-
-# Run RSS consumer manually  
-docker exec -it airflow-webserver-v4 python /opt/airflow/crawler/RSS_Consumer.py
-
-# Trigger Spark embedding processing
-docker exec -it airflow-webserver-v4 airflow dags trigger spark_embedding_processing_dag
-```
+Access: [http://localhost:5601](http://localhost:5601) — không cần auth.

@@ -1,94 +1,5 @@
 services:
-    # 1. MongoDB
-    mongo:
-        image: mongo:6.0
-        container_name: mongo-v4
-        restart: always
-        ports:
-            - "27017:27017"
-        volumes:
-            - ./mongo-data:/data/db
-            - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
-        networks:
-            - trending_news
-
-    # 2. Spark Master
-    spark-master:
-        build:
-            context: .
-            dockerfile: spark.Dockerfile
-        container_name: spark-master-v4
-        environment:
-            - SPARK_MODE=master
-        ports:
-            - "8080:8080"
-            - "7077:7077"
-        volumes:
-            - ./data:/opt/spark/work-dir/data
-            - ./src:/opt/spark/work-dir/src
-            - ./model:/opt/spark/work-dir/model
-            - ./processor:/opt/spark/work-dir/processor
-            - ./jars:/opt/spark/work-dir/jars
-            - ./checkpoints:/opt/spark/work-dir/checkpoints
-            - ./models:/opt/spark/work-dir/models
-        networks:
-            - trending_news
-
-    # 3. Spark Worker
-    spark-worker:
-        build:
-            context: .
-            dockerfile: spark.Dockerfile
-        container_name: spark-worker-v4
-        environment:
-            - SPARK_MODE=worker
-            - SPARK_MASTER=spark://spark-master:7077
-            - SPARK_WORKER_MEMORY=2G
-            - SPARK_WORKER_CORES=2
-        depends_on:
-            - spark-master
-        ports:
-            - "8081:8081"
-        volumes:
-            - ./data:/opt/spark/work-dir/data
-            - ./src:/opt/spark/work-dir/src
-            - ./model:/opt/spark/work-dir/model
-            - ./processor:/opt/spark/work-dir/processor
-            - ./jars:/opt/spark/work-dir/jars
-            - ./checkpoints:/opt/spark/work-dir/checkpoints
-            - ./models:/opt/spark/work-dir/models
-        networks:
-            - trending_news
-
-    # 5. Elasticsearch
-    elasticsearch:
-        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
-        container_name: elasticsearch-v4
-        environment:
-            - discovery.type=single-node
-            - xpack.security.enabled=false
-            - ES_JAVA_OPTS=-Xms1g -Xmx1g
-        ports:
-            - "9200:9200"
-        volumes:
-            - ./es-data:/usr/share/elasticsearch/data
-        networks:
-            - trending_news
-
-    # 6. Kibana
-    kibana:
-        image: docker.elastic.co/kibana/kibana:8.15.0
-        container_name: kibana-v4
-        environment:
-            - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-        ports:
-            - "5601:5601"
-        depends_on:
-            - elasticsearch
-        networks:
-            - trending_news
-
-    # 7. Zookeeper
+    # Zookeeper
     zookeeper:
         image: confluentinc/cp-zookeeper:7.4.0
         container_name: zookeeper-v4
@@ -110,7 +21,7 @@ services:
         networks:
             - trending_news
 
-    # 8. Kafka
+    # 3. Kafka
     kafka:
         image: confluentinc/cp-kafka:7.6.1
         container_name: kafka-v4
@@ -143,7 +54,79 @@ services:
         networks:
             - trending_news
 
-    # 9. Airflow Postgres
+    # 4. Elasticsearch
+    elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+        container_name: elasticsearch-v4
+        environment:
+            - discovery.type=single-node
+            - xpack.security.enabled=false
+            - ES_JAVA_OPTS=-Xms512m -Xmx512m
+        ports:
+            - "9200:9200"
+        volumes:
+            - es-data:/usr/share/elasticsearch/data
+        networks:
+            - trending_news
+
+    # 5. Kibana
+    kibana:
+        image: docker.elastic.co/kibana/kibana:8.15.0
+        container_name: kibana-v4
+        environment:
+            - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+        ports:
+            - "5601:5601"
+        depends_on:
+            - elasticsearch
+        networks:
+            - trending_news
+
+    # 6. Spark Master
+    spark-master:
+        build:
+            context: .
+            dockerfile: spark.Dockerfile
+        container_name: spark-master-v4
+        env_file:
+            - .env
+        environment:
+            - SPARK_MODE=master
+        ports:
+            - "8080:8080"
+            - "7077:7077"
+        volumes:
+            - ./processor:/opt/spark/work-dir/processor
+            - ./jars:/opt/spark/work-dir/jars
+            - .env:/opt/spark/work-dir/.env:ro
+        networks:
+            - trending_news
+
+    # 7. Spark Worker
+    spark-worker:
+        build:
+            context: .
+            dockerfile: spark.Dockerfile
+        container_name: spark-worker-v4
+        env_file:
+            - .env
+        environment:
+            - SPARK_MODE=worker
+            - SPARK_MASTER=spark://spark-master:7077
+            - SPARK_WORKER_MEMORY=2G
+            - SPARK_WORKER_CORES=2
+        depends_on:
+            - spark-master
+        ports:
+            - "8081:8081"
+        volumes:
+            - ./processor:/opt/spark/work-dir/processor
+            - ./jars:/opt/spark/work-dir/jars
+            - .env:/opt/spark/work-dir/.env:ro
+        networks:
+            - trending_news
+
+    # 8. Airflow Postgres
     airflow-postgres:
         image: postgres:15
         container_name: airflow-postgres-v4
@@ -158,7 +141,7 @@ services:
         networks:
             - trending_news
 
-    # 10. Airflow Init
+    # 9. Airflow Init
     airflow-init:
         build: .
         container_name: airflow-init-v4
@@ -173,7 +156,7 @@ services:
         networks:
             - trending_news
 
-    # 11. Airflow Webserver
+    # 10. Airflow Webserver
     airflow-webserver:
         build: .
         container_name: airflow-webserver-v4
@@ -191,8 +174,6 @@ services:
             - ./plugins:/opt/airflow/plugins
             - ./dags:/opt/airflow/dags
             - ./crawler:/opt/airflow/crawler
-            - ./model:/app/model
-            - ./processor:/opt/airflow/processor
             - /var/run/docker.sock:/var/run/docker.sock
         ports:
             - "8085:8080"
@@ -202,7 +183,7 @@ services:
         networks:
             - trending_news
 
-    # 12. Airflow Scheduler
+    # 11. Airflow Scheduler
     airflow-scheduler:
         build: .
         container_name: airflow-scheduler-v4
@@ -219,8 +200,6 @@ services:
             - ./plugins:/opt/airflow/plugins
             - ./dags:/opt/airflow/dags
             - ./crawler:/opt/airflow/crawler
-            - ./model:/app/model
-            - ./processor:/opt/airflow/processor
             - /var/run/docker.sock:/var/run/docker.sock
         command: airflow scheduler
         depends_on:
@@ -234,8 +213,8 @@ networks:
         driver: bridge
 
 volumes:
-    es-data:
     kafka-data:
     airflow_pgdata:
     zookeeper-data:
     zookeeper-logs:
+    es-data:

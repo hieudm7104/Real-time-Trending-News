@@ -1,16 +1,8 @@
 /kafka-data
-/mongo-data
-/mlflow_pgdata
 /logs
-/model
+/es-data
 
-# Checkpoints
-checkpoints/
-
-# Elasticsearch data
-es-data/
-
-# Python bytecode
+# Python
 __pycache__/
 *.pyc
 
@@ -20,15 +12,10 @@ __pycache__/
 *.swp
 *.swo
 
-# OS files
+# OS
 Thumbs.db
 .DS_Store
 
-# Docker env
+# Secrets
 .env
 *.env.local
-
-# ML models
-*.pkl
-*.h5
-*.onnx
