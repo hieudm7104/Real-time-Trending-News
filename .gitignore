@@ -3,3 +3,32 @@
 /mlflow_pgdata
 /logs
 /model
+
+# Checkpoints
+checkpoints/
+
+# Elasticsearch data
+es-data/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Docker env
+.env
+*.env.local
+
+# ML models
+*.pkl
+*.h5
+*.onnx
