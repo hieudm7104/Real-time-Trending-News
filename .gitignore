@@ -16,6 +16,9 @@ __pycache__/
 Thumbs.db
 .DS_Store
 
+# CLI skills
+.claude/skills/
+
 # Secrets
 .env
 *.env.local
