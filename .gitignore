@@ -11,6 +11,7 @@ __pycache__/
 .vscode/
 *.swp
 *.swo
+.kilo/
 
 # OS
 Thumbs.db
@@ -22,3 +23,4 @@ Thumbs.db
 # Secrets
 .env
 *.env.local
+kilo.json
