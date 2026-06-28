@@ -10,6 +10,7 @@ import os
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from threading import Lock
 from kafka import KafkaProducer
@@ -26,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== Config ====================
-KAFKA_BROKER = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka-v4:29092")
+KAFKA_BROKER = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka-v4:29092,kafka-v4-2:29093,kafka-v4-3:29094")
 RAW_TOPIC = os.getenv("KAFKA_RAW_TOPIC", "raw_news")
 OUTPUT_TOPIC = os.getenv("KAFKA_PROCESSED_TOPIC", "processed_data")
 ES_HOSTS = os.getenv("ES_HOSTS", "http://elasticsearch:9200")
@@ -152,7 +153,7 @@ def _ensure_es_indices(es):
     if not es.indices.exists(index=ES_RAW_INDEX):
         logger.info(f"Creating index '{ES_RAW_INDEX}'...")
         es.indices.create(index=ES_RAW_INDEX, body={
-            "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+            "settings": {"number_of_shards": 3, "number_of_replicas": 0},
             "mappings": {
                 "dynamic": True,
                 "properties": {
@@ -166,7 +167,7 @@ def _ensure_es_indices(es):
     if not es.indices.exists(index=ES_PROCESSED_INDEX):
         logger.info(f"Creating index '{ES_PROCESSED_INDEX}' with mapping...")
         es.indices.create(index=ES_PROCESSED_INDEX, body={
-            "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+            "settings": {"number_of_shards": 3, "number_of_replicas": 0},
             "mappings": {
                 "dynamic": True,
                 "properties": {
@@ -309,6 +310,7 @@ def process_batch(df, batch_id):
     producer = get_kafka_producer()
     es = get_es_client()
 
+    enriched_list = []
     for i, article in enumerate(articles):
         enriched = {
             "title": article.get("title"),
@@ -324,20 +326,32 @@ def process_batch(df, batch_id):
             "embedding_dim": EMBEDDING_DIM,
             "top_keywords": article.get("top_keywords", []),
         }
+        enriched_list.append((article, enriched))
 
-        # Write to Elasticsearch (raw + processed)
+    # Parallel writes to Elasticsearch and Kafka
+    def write_article(art, enr):
+        """Write a single article to ES (raw + processed) and Kafka."""
+        errors = []
         try:
-            es.index(index=ES_RAW_INDEX, document=article)
-            es.index(index=ES_PROCESSED_INDEX, document=enriched)
-            logger.info(f"Saved to ES: {enriched['title']}")
+            es.index(index=ES_RAW_INDEX, document=art)
+            es.index(index=ES_PROCESSED_INDEX, document=enr)
         except Exception as e:
-            logger.error(f"ES error for '{enriched['title']}': {e}")
+            errors.append(f"ES: {e}")
 
-        # Write to Kafka
         try:
-            producer.send(OUTPUT_TOPIC, value=enriched)
+            producer.send(OUTPUT_TOPIC, value=enr)
         except Exception as e:
-            logger.error(f"Kafka send error for '{enriched['title']}': {e}")
+            errors.append(f"Kafka: {e}")
+
+        if errors:
+            logger.error(f"Write errors for '{enr['title']}': {'; '.join(errors)}")
+        else:
+            logger.info(f"Saved to ES + Kafka: {enr['title']}")
+
+    with ThreadPoolExecutor(max_workers=min(len(enriched_list), 5)) as pool:
+        futures = [pool.submit(write_article, art, enr) for art, enr in enriched_list]
+        for f in as_completed(futures):
+            f.result()  # re-raise any exception
 
     producer.flush()
     logger.info(f"Batch {batch_id} done. Processed {len(articles)} articles.")
@@ -346,13 +360,9 @@ def process_batch(df, batch_id):
 # ==================== Spark Session ====================
 
 def spark_session():
+    """Create Spark session. Jars are provided via --packages in spark-submit."""
     return SparkSession.builder \
         .appName("SparkEmbedder") \
-        .config("spark.jars",
-                "/opt/spark/work-dir/jars/spark-sql-kafka-0-10_2.12-3.5.0.jar,"
-                "/opt/spark/work-dir/jars/kafka-clients-3.5.0.jar,"
-                "/opt/spark/work-dir/jars/spark-token-provider-kafka-0-10_2.12-3.5.0.jar,"
-                "/opt/spark/work-dir/jars/commons-pool2-2.11.1.jar") \
         .config("spark.sql.adaptive.enabled", "true") \
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
         .getOrCreate()
@@ -396,7 +406,7 @@ def main():
 
     query = parsed.writeStream \
         .foreachBatch(process_batch) \
-        .option("checkpointLocation", "/tmp/spark-embedder-checkpoint") \
+        .option("checkpointLocation", "/opt/spark/checkpoints/spark-embedder-checkpoint") \
         .trigger(processingTime="30 seconds") \
         .start()
 

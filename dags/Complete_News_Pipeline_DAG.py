@@ -27,7 +27,7 @@ default_args = {
 def check_kafka():
     from kafka import KafkaProducer
     producer = KafkaProducer(
-        bootstrap_servers=['kafka-v4:29092'],
+        bootstrap_servers=['kafka-v4:29092', 'kafka-v4-2:29093', 'kafka-v4-3:29094'],
         value_serializer=lambda x: x.encode('utf-8'),
         request_timeout_ms=10000
     )
@@ -70,16 +70,17 @@ def ensure_spark_embedder():
         return True
 
     logger.info("Starting Spark embedder...")
-    jars = "/opt/spark/work-dir/jars/spark-sql-kafka-0-10_2.12-3.5.0.jar," \
-           "/opt/spark/work-dir/jars/kafka-clients-3.5.0.jar," \
-           "/opt/spark/work-dir/jars/spark-token-provider-kafka-0-10_2.12-3.5.0.jar," \
-           "/opt/spark/work-dir/jars/commons-pool2-2.11.1.jar"
+    packages = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0," \
+               "org.apache.kafka:kafka-clients:3.5.0," \
+               "org.apache.spark:spark-token-provider-kafka-0-10_2.12:3.5.0," \
+               "org.apache.commons:commons-pool2:2.11.1"
 
     subprocess.Popen([
         "docker", "exec", "-d", "spark-master-v4",
         "bash", "-lc",
         f"nohup /opt/spark/bin/spark-submit --master spark://spark-master:7077 "
-        f"--conf spark.jars={jars} "
+        f"--packages {packages} "
+        f"--conf spark.sql.adaptive.enabled=true "
         f"/opt/spark/work-dir/processor/spark_embedder.py "
         f"> /tmp/spark_embedder.out 2>&1 &"
     ])

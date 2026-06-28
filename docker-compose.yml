@@ -1,5 +1,5 @@
 services:
-    # Zookeeper
+    # ==================== Zookeeper ====================
     zookeeper:
         image: confluentinc/cp-zookeeper:7.4.0
         container_name: zookeeper-v4
@@ -21,7 +21,9 @@ services:
         networks:
             - trending_news
 
-    # 3. Kafka
+    # ==================== Kafka Cluster (3 brokers) ====================
+
+    # Broker 1 (existing)
     kafka:
         image: confluentinc/cp-kafka:7.6.1
         container_name: kafka-v4
@@ -38,13 +40,13 @@ services:
             KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka-v4:29092,PLAINTEXT_EXTERNAL://localhost:9092
             KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
             KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
-            KAFKA_DEFAULT_REPLICATION_FACTOR: 1
-            KAFKA_MIN_INSYNC_REPLICAS: 1
-            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+            KAFKA_MIN_INSYNC_REPLICAS: 2
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
         volumes:
-            - ./kafka-data:/var/lib/kafka/data
+            - kafka-data-1:/var/lib/kafka/data
         healthcheck:
             test: [ "CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka-v4:29092 || exit 1" ]
             interval: 30s
@@ -54,22 +56,150 @@ services:
         networks:
             - trending_news
 
-    # 4. Elasticsearch
+    # Broker 2
+    kafka-2:
+        image: confluentinc/cp-kafka:7.6.1
+        container_name: kafka-v4-2
+        depends_on:
+            zookeeper:
+                condition: service_healthy
+        ports:
+            - "9093:9093"
+            - "29093:29093"
+        environment:
+            KAFKA_BROKER_ID: 2
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper-v4:2181
+            KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29093,PLAINTEXT_EXTERNAL://0.0.0.0:9093
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka-v4-2:29093,PLAINTEXT_EXTERNAL://localhost:9093
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+            KAFKA_MIN_INSYNC_REPLICAS: 2
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+        volumes:
+            - kafka-data-2:/var/lib/kafka/data
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # Broker 3
+    kafka-3:
+        image: confluentinc/cp-kafka:7.6.1
+        container_name: kafka-v4-3
+        depends_on:
+            zookeeper:
+                condition: service_healthy
+        ports:
+            - "9094:9094"
+            - "29094:29094"
+        environment:
+            KAFKA_BROKER_ID: 3
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper-v4:2181
+            KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29094,PLAINTEXT_EXTERNAL://0.0.0.0:9094
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka-v4-3:29094,PLAINTEXT_EXTERNAL://localhost:9094
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+            KAFKA_MIN_INSYNC_REPLICAS: 2
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+        volumes:
+            - kafka-data-3:/var/lib/kafka/data
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # ==================== Schema Registry ====================
+
+    schema-registry:
+        image: confluentinc/cp-schema-registry:7.6.1
+        container_name: schema-registry-v4
+        depends_on:
+            - kafka
+            - kafka-2
+            - kafka-3
+        environment:
+            SCHEMA_REGISTRY_HOST_NAME: schema-registry-v4
+            SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: >
+                PLAINTEXT_INTERNAL://kafka-v4:29092,
+                PLAINTEXT_INTERNAL://kafka-v4-2:29093,
+                PLAINTEXT_INTERNAL://kafka-v4-3:29094
+            SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+        ports:
+            - "8081:8081"
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # ==================== Elasticsearch Cluster (3 nodes) ====================
+
+    # Node 1
     elasticsearch:
         image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
         container_name: elasticsearch-v4
         environment:
-            - discovery.type=single-node
+            - cluster.name=trending-news-cluster
+            - node.name=node-1
+            - node.roles=master,data
+            - discovery.seed_hosts=elasticsearch-v4-2,elasticsearch-v4-3
+            - cluster.initial_master_nodes=node-1,node-2,node-3
             - xpack.security.enabled=false
             - ES_JAVA_OPTS=-Xms512m -Xmx512m
         ports:
             - "9200:9200"
+            - "9300:9300"
         volumes:
-            - es-data:/usr/share/elasticsearch/data
+            - es-data-1:/usr/share/elasticsearch/data
+        restart: unless-stopped
         networks:
             - trending_news
 
-    # 5. Kibana
+    # Node 2
+    elasticsearch-2:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+        container_name: elasticsearch-v4-2
+        environment:
+            - cluster.name=trending-news-cluster
+            - node.name=node-2
+            - node.roles=master,data
+            - discovery.seed_hosts=elasticsearch-v4,elasticsearch-v4-3
+            - cluster.initial_master_nodes=node-1,node-2,node-3
+            - xpack.security.enabled=false
+            - ES_JAVA_OPTS=-Xms256m -Xmx256m
+        ports:
+            - "9201:9200"
+            - "9301:9300"
+        volumes:
+            - es-data-2:/usr/share/elasticsearch/data
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # Node 3
+    elasticsearch-3:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+        container_name: elasticsearch-v4-3
+        environment:
+            - cluster.name=trending-news-cluster
+            - node.name=node-3
+            - node.roles=master,data
+            - discovery.seed_hosts=elasticsearch-v4,elasticsearch-v4-2
+            - cluster.initial_master_nodes=node-1,node-2,node-3
+            - xpack.security.enabled=false
+            - ES_JAVA_OPTS=-Xms256m -Xmx256m
+        ports:
+            - "9202:9200"
+            - "9302:9300"
+        volumes:
+            - es-data-3:/usr/share/elasticsearch/data
+        restart: unless-stopped
+        networks:
+            - trending_news
+
+    # ==================== Kibana ====================
     kibana:
         image: docker.elastic.co/kibana/kibana:8.15.0
         container_name: kibana-v4
@@ -82,7 +212,9 @@ services:
         networks:
             - trending_news
 
-    # 6. Spark Master
+    # ==================== Spark Cluster (1 master + 3 workers) ====================
+
+    # Master
     spark-master:
         build:
             context: .
@@ -99,10 +231,11 @@ services:
             - ./processor:/opt/spark/work-dir/processor
             - ./jars:/opt/spark/work-dir/jars
             - .env:/opt/spark/work-dir/.env:ro
+            - spark-checkpoint:/opt/spark/checkpoints
         networks:
             - trending_news
 
-    # 7. Spark Worker
+    # Worker 1 (existing)
     spark-worker:
         build:
             context: .
@@ -123,10 +256,63 @@ services:
             - ./processor:/opt/spark/work-dir/processor
             - ./jars:/opt/spark/work-dir/jars
             - .env:/opt/spark/work-dir/.env:ro
+            - spark-checkpoint:/opt/spark/checkpoints
         networks:
             - trending_news
 
-    # 8. Airflow Postgres
+    # Worker 2
+    spark-worker-2:
+        build:
+            context: .
+            dockerfile: spark.Dockerfile
+        container_name: spark-worker-v4-2
+        env_file:
+            - .env
+        environment:
+            - SPARK_MODE=worker
+            - SPARK_MASTER=spark://spark-master:7077
+            - SPARK_WORKER_MEMORY=2G
+            - SPARK_WORKER_CORES=2
+        depends_on:
+            - spark-master
+        ports:
+            - "8082:8081"
+        volumes:
+            - ./processor:/opt/spark/work-dir/processor
+            - ./jars:/opt/spark/work-dir/jars
+            - .env:/opt/spark/work-dir/.env:ro
+            - spark-checkpoint:/opt/spark/checkpoints
+        networks:
+            - trending_news
+
+    # Worker 3
+    spark-worker-3:
+        build:
+            context: .
+            dockerfile: spark.Dockerfile
+        container_name: spark-worker-v4-3
+        env_file:
+            - .env
+        environment:
+            - SPARK_MODE=worker
+            - SPARK_MASTER=spark://spark-master:7077
+            - SPARK_WORKER_MEMORY=2G
+            - SPARK_WORKER_CORES=2
+        depends_on:
+            - spark-master
+        ports:
+            - "8083:8081"
+        volumes:
+            - ./processor:/opt/spark/work-dir/processor
+            - ./jars:/opt/spark/work-dir/jars
+            - .env:/opt/spark/work-dir/.env:ro
+            - spark-checkpoint:/opt/spark/checkpoints
+        networks:
+            - trending_news
+
+    # ==================== Airflow ====================
+
+    # Postgres
     airflow-postgres:
         image: postgres:15
         container_name: airflow-postgres-v4
@@ -141,7 +327,7 @@ services:
         networks:
             - trending_news
 
-    # 9. Airflow Init
+    # Init
     airflow-init:
         build: .
         container_name: airflow-init-v4
@@ -156,7 +342,7 @@ services:
         networks:
             - trending_news
 
-    # 10. Airflow Webserver
+    # Webserver
     airflow-webserver:
         build: .
         container_name: airflow-webserver-v4
@@ -183,7 +369,7 @@ services:
         networks:
             - trending_news
 
-    # 11. Airflow Scheduler
+    # Scheduler
     airflow-scheduler:
         build: .
         container_name: airflow-scheduler-v4
@@ -213,8 +399,13 @@ networks:
         driver: bridge
 
 volumes:
-    kafka-data:
+    kafka-data-1:
+    kafka-data-2:
+    kafka-data-3:
     airflow_pgdata:
     zookeeper-data:
     zookeeper-logs:
-    es-data:
+    es-data-1:
+    es-data-2:
+    es-data-3:
+    spark-checkpoint:

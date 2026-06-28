@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 # ================= Kafka Config =================
-KAFKA_BOOTSTRAP_SERVERS = "kafka-v4:29092"
+KAFKA_BOOTSTRAP_SERVERS = "kafka-v4:29092,kafka-v4-2:29093,kafka-v4-3:29094"
 KAFKA_TOPIC = "raw_news"
 
 def create_kafka_producer():
