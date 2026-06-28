@@ -54,7 +54,7 @@ REQUEST_TIMEOUT = 8
 
 # ================= Helper =================
 def format_datetime(dt: datetime):
-    return dt.strftime("%d/%m/%Y/%H/%M/%S")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 def clean_description(desc: str) -> str:
     """Loại bỏ thẻ <a>, <img>, giữ lại nội dung text"""
