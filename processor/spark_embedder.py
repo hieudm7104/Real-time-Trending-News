@@ -7,7 +7,9 @@ No ONNX, no CUDA, no local model.
 import json
 import logging
 import os
+import re
 import time
+from collections import Counter
 from datetime import datetime
 from threading import Lock
 from kafka import KafkaProducer
@@ -35,7 +37,71 @@ EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
 
-# Deduplication cache
+# ==================== Stop Words ====================
+
+_VIETNAMESE_STOP_WORDS = {
+    "và", "của", "các", "có", "được", "cho", "với", "trong", "một", "người",
+    "đã", "sẽ", "đang", "không", "tại", "vào", "ra", "về", "là", "này",
+    "đó", "những", "khi", "từ", "đến", "sau", "trước", "nếu", "bị", "để",
+    "vì", "nên", "mà", "cũng", "rất", "như", "thì", "đây", "ấy", "bạn",
+    "tôi", "anh", "chị", "em", "chúng", "ông", "bà", "cô", "chú", "bác",
+    "vẫn", "lại", "đi", "qua", "theo", "khiến", "thấy", "hay", "hoặc",
+    "đều", "hơn", "mới", "nếu", "vậy", "nhưng", "rằng", "phải", "chưa",
+    "đừng", "hãy", "cần", "mong", "muốn", "mong", "nhé", "ngay", "vừa",
+    "thế", "nhỉ", "sao", "hả", "à", "âu", "nhỉ", "nhé", "thôi", "như",
+    "cả", "vẫn", "hãy", "đang", "thì", "vào", "trên", "dưới", "bên",
+    "việc", "năm", "nay", "nay", "nào", "bao", "lâu", "đâu", "vì",
+    "lên", "xuống", "vào", "ra", "qua", "lại", "nhau", "anh", "chị",
+}
+
+_ENGLISH_STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "can", "could",
+    "shall", "should", "may", "might", "must", "need", "dare", "ought", "used",
+    "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
+    "me", "him", "her", "us", "them", "my", "your", "his", "its", "our",
+    "their", "mine", "yours", "hers", "ours", "theirs",
+    "and", "or", "but", "if", "because", "as", "until", "while", "of", "at",
+    "by", "for", "with", "about", "against", "between", "into", "through", "during",
+    "before", "after", "above", "below", "to", "from", "up", "down", "in", "out",
+    "on", "off", "over", "under", "again", "further", "then", "once", "here", "there",
+    "when", "where", "why", "how", "all", "each", "every", "both", "few", "more",
+    "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same",
+    "so", "than", "too", "very", "just", "also", "now", "what", "which", "who",
+    "whom", "whose", "any", "many", "much", "several",
+}
+
+_STOP_WORDS = _VIETNAMESE_STOP_WORDS | _ENGLISH_STOP_WORDS
+
+# ==================== Keyword Extraction ====================
+
+def extract_keywords(text, top_n=10):
+    """Extract top-N keywords from text using word frequency (TF-based).
+    
+    Pure Python, no external deps needed. Tokenizes, filters stop words,
+    counts frequency, returns list of (word, count) tuples.
+    """
+    # Normalize: lowercase, remove punctuation except Vietnamese chars
+    text = text.lower()
+    text = re.sub(r'[^\w\sàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]', ' ', text)
+    
+    # Tokenize
+    tokens = text.split()
+    
+    # Filter: remove stop words, short words (< 3 chars), pure numbers
+    words = [
+        t for t in tokens 
+        if t not in _STOP_WORDS 
+        and len(t) >= 3
+        and not t.isdigit()
+    ]
+    
+    # Count and return top N
+    most_common = Counter(words).most_common(top_n)
+    return [{"word": w, "count": c} for w, c in most_common]
+
+
+# ==================== Deduplication ====================
 _seen_urls = {}
 _seen_urls_lock = Lock()
 DEDUP_TTL_SECS = 3600  # 1 hour — URLs older than this can be re-processed
@@ -114,6 +180,13 @@ def _ensure_es_indices(es):
                         "similarity": "cosine",
                     },
                     "embedding_dim": {"type": "integer"},
+                    "top_keywords": {
+                        "type": "nested",
+                        "properties": {
+                            "word": {"type": "keyword"},
+                            "count": {"type": "integer"},
+                        }
+                    },
                 }
             }
         })
@@ -215,8 +288,13 @@ def process_batch(df, batch_id):
             logger.warning(f"Skipping empty article: {row.url}")
             continue
 
+        # Extract keywords for trending detection
+        keywords = extract_keywords(text, top_n=10)
+
         texts.append(text)
-        articles.append(row.asDict())
+        article_dict = row.asDict()
+        article_dict["top_keywords"] = keywords
+        articles.append(article_dict)
 
     if not texts:
         logger.info(f"Batch {batch_id}: all articles skipped (duplicates or empty)")
@@ -244,6 +322,7 @@ def process_batch(df, batch_id):
             "embedding": embeddings[i] if i < len(embeddings) else [0.0] * EMBEDDING_DIM,
             "embedding_model": EMBEDDING_MODEL,
             "embedding_dim": EMBEDDING_DIM,
+            "top_keywords": article.get("top_keywords", []),
         }
 
         # Write to Elasticsearch (raw + processed)

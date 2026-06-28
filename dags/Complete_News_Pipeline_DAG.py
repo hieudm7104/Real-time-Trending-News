@@ -128,6 +128,29 @@ def ensure_vnexpress():
 def ensure_kenh14():
     return ensure_crawler("Kenh14", "Kenh14_Crawler.py")
 
+# ==================== Trending Clustering ====================
+
+def run_trending_clustering():
+    """Run batch Spark job to cluster articles by embedding and assign topic labels."""
+    logger.info("Running trending clustering job...")
+    result = subprocess.run(
+        [
+            "docker", "exec", "spark-master-v4",
+            "bash", "-lc",
+            "/opt/spark/bin/spark-submit "
+            "--master spark://spark-master:7077 "
+            "--conf spark.sql.adaptive.enabled=true "
+            "/opt/spark/work-dir/processor/trending_clustering.py "
+            "2>&1",
+        ],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        logger.error(f"Clustering failed:\n{result.stderr}")
+        raise Exception(f"Trending clustering failed: {result.stderr[:500]}")
+    logger.info(f"Clustering output:\n{result.stdout[-1000:]}")
+    logger.info("Trending clustering completed")
+
 # ==================== Monitoring ====================
 
 def monitor():
@@ -186,6 +209,12 @@ with DAG(
         python_callable=monitor,
     )
 
+    trend_cluster = PythonOperator(
+        task_id="trending_clustering",
+        python_callable=run_trending_clustering,
+        execution_timeout=timedelta(seconds=120),
+    )
+
     end = DummyOperator(task_id="end")
 
-    start >> check_infra >> ensure_spark >> ensure_embedder >> [crawler_vne, crawler_k14] >> monitor_task >> end
+    start >> check_infra >> ensure_spark >> ensure_embedder >> [crawler_vne, crawler_k14] >> monitor_task >> trend_cluster >> end
